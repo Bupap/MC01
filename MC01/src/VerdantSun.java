@@ -6,15 +6,26 @@ public class VerdantSun {
     private Soil[][] field;
     private int savings;
     private int currentDay;
+    private int excavationsToday;
     private WateringCan wateringCan;
     private Map<String, Plant> availablePlants;
     private Map<String, Fertilizer> availableFertilizers;
     private Scanner scanner;
 
+    private final int[][] METEORITE_PATTERN = {
+            {1,1}, {1,4}, {1,5}, {1,8},
+            {3,3}, {3,4}, {3,5}, {3,6},
+            {4,1}, {4,3}, {4,4}, {4,5}, {4,6}, {4,8},
+            {5,1}, {5,3}, {5,4}, {5,5}, {5,6}, {5,8},
+            {6,3}, {6,4}, {6,5}, {6,6},
+            {8,1}, {8,4}, {8,5}, {8,8}
+    };
+
     public VerdantSun() {
         this.field = new Soil[10][10];
         this.savings = 1000;
         this.currentDay = 1;
+        this.excavationsToday = 0;
         this.wateringCan = new WateringCan();
         this.scanner = new Scanner(System.in);
         loadInitialData();
@@ -22,19 +33,19 @@ public class VerdantSun {
 
     private void loadInitialData() {
         try {
-            this.availablePlants = JsonLoader.loadPlants("Plants.json"); //checks available plants
-            this.availableFertilizers = JsonLoader.loadFertilizers("Fertilizers.json"); //checks available fertz
+            this.availablePlants = JsonLoader.loadPlants("Plants.json");
+            this.availableFertilizers = JsonLoader.loadFertilizers("Fertilizers.json");
             String[][] gridLayout = JsonLoader.loadMapGrid("Map.json");
             Map<String, String> legend = JsonLoader.loadMapLegend("Map.json");
 
-            for (int r = 0; r < 10; r++) { //loop creates grid
+            for (int r = 0; r < 10; r++) {
                 for (int c = 0; c < 10; c++) {
                     String symbol = gridLayout[r][c];
                     String type = legend.get(symbol);
                     field[r][c] = new Soil(type);
                 }
             }
-        } catch (Exception e) { //failsafe
+        } catch (Exception e) {
             System.out.println("Error loading game data.");
         }
     }
@@ -43,17 +54,19 @@ public class VerdantSun {
         while (currentDay <= 15) {
             displayField();
             displayStatus();
-            System.out.println("[1] Plant \n[2] Harvest/Remove \n[3] Water \n[4] Refill \n[5] Fertilize \n[6] Next Day");
+
+            System.out.println("[1] Plant [2] Harvest/Remove [3] Water [4] Refill [5] Fertilize [6] Next Day" + (currentDay > 7 ? " [7] Excavate" : ""));
             System.out.print("Action: ");
             String action = scanner.nextLine();
 
-            switch (action) { //menu
+            switch (action) {
                 case "1": handlePlanting(); break;
                 case "2": handleBulkRemove(); break;
                 case "3": handleBulkWatering(); break;
                 case "4": handleRefill(); break;
                 case "5": handleFertilizing(); break;
                 case "6": advanceDay(); break;
+                case "7": if (currentDay > 7) handleExcavate(); break;
                 default: System.out.println("Invalid action.");
             }
         }
@@ -61,14 +74,20 @@ public class VerdantSun {
     }
 
     private void displayField() {
-        System.out.println("\n   1 2 3 4 5 6 7 8 9 10");//loop displays field
+        System.out.println("\n    1 2 3 4 5 6 7 8 9 10");
         for (int r = 0; r < 10; r++) {
             System.out.printf("%2d ", (r + 1));
             for (int c = 0; c < 10; c++) {
                 Soil s = field[r][c];
-                if (s.hasMeteorite()) System.out.print("M ");
-                else if (s.getPlant() != null) System.out.print("P ");
-                else System.out.print(". ");
+                if (s.hasMeteorite()) {
+                    System.out.print("- ");
+                } else if (s.getPlant() != null) {
+                    //gets the first letter of the plant name
+                    char symbol = s.getPlant().getName().toUpperCase().charAt(0);
+                    System.out.print(symbol + " ");
+                } else {
+                    System.out.print(". ");
+                }
             }
             System.out.println();
         }
@@ -85,8 +104,12 @@ public class VerdantSun {
         int c = Integer.parseInt(parts[2]) - 1;
 
         if (isValidCoord(r, c) && availablePlants.containsKey(id)) {
+            if (field[r][c].hasMeteorite()) {
+                System.out.println("Cannot plant here! A meteorite is blocking the tile.");
+                return;
+            }
             Plant p = availablePlants.get(id);
-            if (savings >= p.getPrice() && field[r][c].getPlant() == null && !field[r][c].hasMeteorite()) {
+            if (savings >= p.getPrice() && field[r][c].getPlant() == null) {
                 field[r][c].setPlant(new Plant(p.getName(), p.getPrice(), p.getYield(), p.getMaxGrowth(), p.getPreferredSoil(), p.getCropPrice()));
                 savings -= p.getPrice();
             }
@@ -125,15 +148,9 @@ public class VerdantSun {
                 savings += earnings;
                 System.out.println("Harvested " + p.getName() + " at (" + (r+1) + "," + (c+1) + ") for $" + earnings);
             } else {
-                System.out.println("Removed immature " + p.getName());
+                System.out.println("Removed immature " + p.getName() + " at (" + (r+1) + "," + (c+1) + ")");
             }
             soil.setPlant(null);
-        } else if (soil.hasMeteorite()) {
-            if (savings >= 500) {
-                savings -= 500;
-                soil.excavate();
-                System.out.println("Meteorite excavated at (" + (r+1) + "," + (c+1) + ")");
-            }
         }
     }
 
@@ -148,14 +165,39 @@ public class VerdantSun {
         int c = Integer.parseInt(parts[2]) - 1;
 
         if (isValidCoord(r, c) && availableFertilizers.containsKey(id)) {
-            Fertilizer f = availableFertilizers.get(id);
             if (field[r][c].getFertilizer() != null) {
                 System.out.println("Error: This plot already has fertilizer applied.");
                 return;
             }
+            Fertilizer f = availableFertilizers.get(id);
             if (savings >= f.getPrice()) {
                 savings -= f.getPrice();
                 field[r][c].setFertilizer(new Fertilizer(f.getName(), f.getPrice(), f.getEffectDays()));
+            }
+        }
+    }
+
+    private void handleExcavate() {
+        System.out.print("Enter tiles to excavate (r1 c1 r2 c2 ...): ");
+        String[] parts = scanner.nextLine().split(" ");
+        for (int i = 0; i < parts.length - 1; i += 2) {
+            if (excavationsToday >= 5) {
+                System.out.println("Daily limit reached (5/5). Wait until tomorrow.");
+                break;
+            }
+            int r = Integer.parseInt(parts[i]) - 1;
+            int c = Integer.parseInt(parts[i+1]) - 1;
+
+            if (isValidCoord(r, c) && field[r][c].hasMeteorite()) {
+                if (savings >= 500) {
+                    savings -= 500;
+                    field[r][c].excavate();
+                    field[r][c].setFertilizer(new Fertilizer("Permanent", 0, 999));
+                    excavationsToday++;
+                    System.out.println("Tile (" + (r+1) + "," + (c+1) + ") excavated and permanently fertilized.");
+                } else {
+                    System.out.println("Insufficient funds ($500) for tile (" + (r+1) + "," + (c+1) + ").");
+                }
             }
         }
     }
@@ -175,16 +217,20 @@ public class VerdantSun {
                 field[r][c].processDayEnd();
             }
         }
+        excavationsToday = 0;
         if (currentDay == 7) triggerMeteoriteEvent();
         savings += 50;
         currentDay++;
     }
 
     private void triggerMeteoriteEvent() {
-        int r = (int) (Math.random() * 10);
-        int c = (int) (Math.random() * 10);
-        field[r][c].hitByMeteorite();
-        System.out.println("!!! A meteorite struck at row " + (r + 1) + ", col " + (c + 1) + " !!!");
+        System.out.println("!!! A METEORITE SHOWER HAS STRUCK THE FIELD !!!");
+        for (int[] pos : METEORITE_PATTERN) {
+            int r = pos[0];
+            int c = pos[1];
+            processHarvestOrRemove(r, c);
+            field[r][c].hitByMeteorite();
+        }
     }
 
     private boolean isValidCoord(int r, int c) {
